@@ -48,10 +48,16 @@ internal static class TypoAnalyzer
         bool Controlled,
         int Ratio);
 
-    public static List<ErrorRecord> Analyze(IReadOnlyList<ValueEntry> values, CancellationToken ct)
+    /// <param name="dictionary">
+    /// The dictionary of the field, when there is one: it replaces "the most common value in the batch" as the
+    /// reference, so a value is right when it is in the dictionary and wrong when it is not.
+    /// </param>
+    public static List<ErrorRecord> Analyze(IReadOnlyList<ValueEntry> values, CancellationToken ct, DictionaryLookup? dictionary = null)
     {
         List<ErrorRecord> result = new();
         if (values.Count == 0) return result;
+
+        if (dictionary != null) return AnalyzeWithDictionary(values, dictionary, ct);
 
         // cleaned form of every distinct raw value, with how many times it was keyed
         Dictionary<string, int> variantCounts = new(StringComparer.Ordinal);
@@ -135,6 +141,89 @@ internal static class TypoAnalyzer
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Judges every value against the dictionary: exact match is fine, the same value written with other case / punctuation
+    /// is called out, anything else is "not in the dictionary" with the nearest dictionary value as the suggestion.
+    /// The batch only decides between equally near suggestions (the one used more often wins).
+    /// </summary>
+    private static List<ErrorRecord> AnalyzeWithDictionary(IReadOnlyList<ValueEntry> values, DictionaryLookup dictionary, CancellationToken ct)
+    {
+        Dictionary<string, int> used = new(StringComparer.Ordinal);
+        foreach (ValueEntry entry in values)
+        {
+            string key = DictionaryLookup.Key(entry.Value);
+            if (key.Length > 0) used[key] = used.GetValueOrDefault(key) + 1;
+        }
+
+        int Frequency(string dictionaryValue) => used.GetValueOrDefault(DictionaryLookup.Key(dictionaryValue));
+
+        List<ErrorRecord> result = new();
+        Dictionary<string, List<(string Message, string Value)>> findingCache = new(StringComparer.Ordinal);
+
+        int processed = 0;
+        foreach (ValueEntry entry in values)
+        {
+            if ((++processed & 0x3FF) == 0) ct.ThrowIfCancellationRequested();
+
+            if (!findingCache.TryGetValue(entry.Value, out var findings))
+            {
+                findings = EvaluateWithDictionary(entry.Value, dictionary, Frequency);
+                findingCache[entry.Value] = findings;
+            }
+
+            foreach ((string message, string value) in findings)
+                result.Add(new ErrorRecord(entry.Db3, message + entry.Location, value, entry.ImageName, entry.RecordId));
+        }
+
+        return result;
+    }
+
+    private static List<(string Message, string Value)> EvaluateWithDictionary(string raw, DictionaryLookup dictionary, Func<string, int> frequency)
+    {
+        List<(string Message, string Value)> findings = new();
+
+        if (raw.Any(TextUtil.IsInvisible))
+            findings.Add(("[Typo] Invisible or non-breaking character", TextUtil.Visible(raw)));
+
+        string cleaned = TextUtil.Clean(raw);
+        if (cleaned.Length == 0)
+        {
+            findings.Add(("[Typo] Value contains only spaces / invisible characters", TextUtil.Visible(raw)));
+            return findings;
+        }
+
+        if (raw.StartsWith(' ')) findings.Add(("[Typo] Extra leading space", raw));
+        if (raw.EndsWith(' ')) findings.Add(("[Typo] Extra trailing space", raw));
+        if (raw.Contains("  ")) findings.Add(("[Typo] Double space inside the value", raw));
+
+        if (dictionary.Contains(cleaned)) return findings;
+
+        string? sameValue = dictionary.FindLoose(cleaned);
+        if (sameValue != null)
+        {
+            findings.Add(($"[Typo] Not written as in the dictionary - '{sameValue}' (case / spacing / punctuation)", cleaned));
+            return findings;
+        }
+
+        // "of Cushkillary" / "Co. Galway": the value is in the dictionary once the wording is taken off
+        string plain = Qc.QcWording.Plain(cleaned);
+        if (plain != cleaned && plain.Length > 0 && (dictionary.Contains(plain) || dictionary.FindLoose(plain) != null))
+        {
+            findings.Add(($"[Typo] Not in the dictionary ({dictionary.Names}) - extra wording, did you mean '{dictionary.FindLoose(plain) ?? plain}'?", cleaned));
+            return findings;
+        }
+
+        // a short value has too few letters to say which dictionary value was meant
+        int maxDistance = cleaned.Length >= 7 ? 2 : cleaned.Length >= 4 ? 1 : 0;
+        var nearest = dictionary.Nearest(cleaned, maxDistance, frequency);
+
+        findings.Add((nearest == null
+            ? $"[Typo] Not in the dictionary ({dictionary.Names})"
+            : $"[Typo] Not in the dictionary ({dictionary.Names}) - did you mean '{nearest.Value.Value}'?", cleaned));
+
+        return findings;
     }
 
     /// <summary>The problems of one value: what is wrong (message) and the value it is about.</summary>

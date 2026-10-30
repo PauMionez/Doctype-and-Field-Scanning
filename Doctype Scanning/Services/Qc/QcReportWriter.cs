@@ -118,7 +118,7 @@ public static class QcReportWriter
             List<QcFlag> flags = result.Flags.Where(f => f.Check == check).ToList();
 
             ws.Range[row, 1].Number = check;
-            ws.Range[row, 2].Text = check == QcRunner.DictionaryCheck ? $"{name} - not run" : name;
+            ws.Range[row, 2].Text = check == QcRunner.DictionaryCheck && !result.DictionaryRun ? $"{name} - not run" : name;
             ws.Range[row, 3].Number = flags.Count;
             ws.Range[row, 4].Number = flags.Where(f => f.ImageName.Length > 0).Select(f => f.ImageName).Distinct().Count();
             row++;

@@ -3,7 +3,7 @@
            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
            xmlns:hc="https://handyorg.github.io/handycontrol"
            xmlns:vm="clr-namespace:Doctype_Scanning.ViewModels"
-           Title="{Binding Title}" Height="660" Width="820" MinHeight="620" MinWidth="720"
+           Title="{Binding Title}" Height="740" Width="820" MinHeight="700" MinWidth="720"
            WindowStartupLocation="CenterScreen"
            Background="{DynamicResource RegionBrush}">
 
@@ -63,7 +63,7 @@
 
         <Border Grid.Row="1" Style="{StaticResource CardStyle}">
             <StackPanel>
-                <TextBlock Text="1. CI (doctypes and fields)" Style="{StaticResource StepStyle}" />
+                <TextBlock Text="1. CI (doctypes and fields) and dictionary" Style="{StaticResource StepStyle}" />
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="170" />
@@ -75,6 +75,21 @@
                     <TextBlock Grid.Column="1" Text="{Binding CiPath}" ToolTip="{Binding CiPath}"
                                Style="{StaticResource PathStyle}" Margin="14 0" />
                     <TextBlock Grid.Column="2" Text="{Binding CiSummary}" Style="{StaticResource HintStyle}" />
+                </Grid>
+
+                <!-- optional: the dictionary becomes the reference of the typo check (instead of the most common value) -->
+                <Grid Margin="0 8 0 0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="170" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Content="Import Dictionary" Command="{Binding ImportDictionaryCommand}"
+                            ToolTip="Dictionary file (e.g. Dictionary_24015.txt). Fields whose CI Keying Dictionary is in it are checked against it."
+                            Style="{StaticResource ButtonPrimary}" Height="34" HorizontalAlignment="Stretch" />
+                    <TextBlock Grid.Column="1" Text="{Binding DictionaryPath}" ToolTip="{Binding DictionaryPath}"
+                               Style="{StaticResource PathStyle}" Margin="14 0" />
+                    <TextBlock Grid.Column="2" Text="{Binding DictionarySummary}" Style="{StaticResource HintStyle}" />
                 </Grid>
             </StackPanel>
         </Border>
@@ -116,6 +131,7 @@
                                       Style="{StaticResource ComboBoxExtend}"
                                       DisplayMemberPath="Display" Height="34" HorizontalAlignment="Stretch"
                                       IsEnabled="{Binding IsIdle}" hc:InfoElement.Placeholder="Import a CI to load its fields" />
+                            <TextBlock Text="{Binding ReferenceHint}" Style="{StaticResource HintStyle}" TextWrapping="Wrap" Margin="0 8 0 0" />
                             <Button Content="Start" Command="{Binding StartCommand}" Style="{StaticResource ButtonSuccess}"
                                     Width="170" Height="38" FontSize="14" HorizontalAlignment="Left" Margin="0 14 0 0" />
                         </StackPanel>

@@ -1,6 +1,7 @@
 using Doctype_Scanning.Models;
 using Syncfusion.XlsIO;
 using System.IO;
+using System.Text.RegularExpressions;
 
 namespace Doctype_Scanning.Services;
 
@@ -109,7 +110,7 @@ public static class CiReader
     private static List<CiField> ReadFields(IWorksheet ws, int sectionRow, int lastRow, int lastCol)
     {
         int headerRow = sectionRow + 1;
-        int labelCol = 0, nameCol = 0, headerFieldCol = 0;
+        int labelCol = 0, nameCol = 0, headerFieldCol = 0, dictionaryCol = 0;
 
         for (int col = 1; col <= lastCol; col++)
         {
@@ -118,6 +119,7 @@ public static class CiReader
             if (header.Equals("Field Label", StringComparison.OrdinalIgnoreCase)) labelCol = col;
             else if (header.Equals("Field Name", StringComparison.OrdinalIgnoreCase)) nameCol = col;
             else if (header.Equals("Header Field", StringComparison.OrdinalIgnoreCase)) headerFieldCol = col;
+            else if (header.Equals("Keying Dictionary", StringComparison.OrdinalIgnoreCase)) dictionaryCol = col;
         }
 
         if (labelCol == 0 || nameCol == 0)
@@ -140,11 +142,26 @@ public static class CiReader
             {
                 Label = label.Length > 0 ? label : name,
                 Name = name,
-                IsHeader = IsMarked(ws, row, headerFieldCol)
+                IsHeader = IsMarked(ws, row, headerFieldCol),
+                Dictionaries = dictionaryCol > 0 ? DictionaryNames(ws.Range[row, dictionaryCol].DisplayText) : Array.Empty<string>()
             });
         }
 
         return fields;
+    }
+
+    /// <summary>
+    /// The dictionary names in a "Keying Dictionary" cell. A cell can hold several, separated by ";" or "," and sometimes
+    /// with stray characters, so only the Dict_xxx words are taken.
+    /// </summary>
+    private static List<string> DictionaryNames(string? cell)
+    {
+        if (string.IsNullOrWhiteSpace(cell)) return new List<string>();
+
+        return Regex.Matches(cell, @"Dict_\w+")
+            .Select(m => m.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static bool IsMarked(IWorksheet ws, int row, int col) =>

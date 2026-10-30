@@ -11,7 +11,7 @@ public static class QcRunner
     {
         [1] = "Blank header",
         [2] = "Form wording",
-        [3] = "Typo (1-2 letters from a more common value)",
+        [3] = "Typo (1-2 letters from a dictionary / more common value)",
         [4] = "Dictionary (Dict_STND_Ireland)",
         [5] = "One-off value",
         [6] = "Coverpage vs next Census",
@@ -23,23 +23,26 @@ public static class QcRunner
         [12] = "Capture share above the limit"
     };
 
-    public static QcResult Run(string file, string batchName, CiData ci, double captureLimitPercent)
+    /// <param name="dictionaries">
+    /// The imported dictionary file, or null. The dictionary of each place field comes from the CI "Keying Dictionary" column;
+    /// a field with one is checked against it (checks 3 and 4), the others against the most common value in the batch (check 3).
+    /// </param>
+    public static QcResult Run(string file, string batchName, CiData ci, double captureLimitPercent, DictionaryLibrary? dictionaries = null)
     {
         QcBatch batch = QcBatchReader.Read(file, batchName, ci);
 
-        List<QcFlag> flags = QcHeaderChecks.Run(batch.Images);
-        flags.AddRange(QcDoctypeChecks.Run(batch.Images, captureLimitPercent));
+        List<string> notes = new(batch.Notes);
+        Dictionary<string, DictionaryLookup> lookups = FindDictionaries(ci, dictionaries, notes);
 
-        List<string> notes = new(batch.Notes)
-        {
-            "Check 4 (dictionary) was not run: the Dict_STND_Ireland dictionary files have not been provided yet."
-        };
+        List<QcFlag> flags = QcHeaderChecks.Run(batch.Images, lookups);
+        flags.AddRange(QcDoctypeChecks.Run(batch.Images, captureLimitPercent));
 
         return new QcResult
         {
             BatchName = batchName,
             ImageCount = batch.Images.Count,
             CaptureLimitPercent = captureLimitPercent,
+            DictionaryRun = lookups.Count > 0,
             DocTypeCounts = batch.Images
                 .GroupBy(i => i.DocType.Length == 0 ? "(blank)" : i.DocType)
                 .Select(g => new KeyValuePair<string, int>(g.Key, g.Count()))
@@ -51,5 +54,35 @@ public static class QcRunner
                 .ThenBy(f => f.Field, StringComparer.Ordinal)
                 .ToList()
         };
+    }
+
+    /// <summary>Place field label -> its dictionary, for the fields whose CI dictionary is in the imported file. Says in the notes what was and was not used.</summary>
+    private static Dictionary<string, DictionaryLookup> FindDictionaries(CiData ci, DictionaryLibrary? library, List<string> notes)
+    {
+        Dictionary<string, DictionaryLookup> lookups = new();
+
+        if (library == null)
+        {
+            notes.Add("Check 4 (dictionary) was not run: no dictionary was imported. Check 3 compares with the most common value in the batch.");
+            return lookups;
+        }
+
+        foreach (string label in QcFields.Places)
+        {
+            CiField? field = ci.Fields.FirstOrDefault(f => TextUtil.Loose(f.Label) == TextUtil.Loose(label));
+            if (field == null || field.Dictionaries.Count == 0) continue;
+
+            DictionaryLookup? lookup = library.Lookup(field.Dictionaries);
+
+            if (lookup != null) lookups[label] = lookup;
+            else notes.Add($"'{label}': dictionary {string.Join(", ", field.Dictionaries)} is not in the imported dictionary file - checked against the most common value in the batch instead.");
+        }
+
+        if (lookups.Count == 0)
+            notes.Add("Check 4 (dictionary) was not run: none of the place fields has its dictionary in the imported file.");
+        else
+            notes.Add("Dictionaries used: " + string.Join("; ", lookups.Select(l => $"{l.Key} = {l.Value.Names}")));
+
+        return lookups;
     }
 }

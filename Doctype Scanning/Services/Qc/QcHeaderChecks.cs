@@ -3,7 +3,7 @@ using Doctype_Scanning.Models;
 namespace Doctype_Scanning.Services.Qc;
 
 /// <summary>
-/// Header place-name checks 1, 2, 3, 5, 6, 7, 8 and 9. An image is judged by one header value (not one per record)
+/// Header place-name checks 1, 2, 3, 4, 5, 6, 7, 8 and 9. An image is judged by one header value (not one per record)
 /// and neighbours are the Census / Coverpage images next to it in ImageName order (Capture and other pages are skipped).
 /// </summary>
 internal static class QcHeaderChecks
@@ -14,14 +14,17 @@ internal static class QcHeaderChecks
     // values shorter than this are too ambiguous to compare
     private const int MinTypoLength = 4;
 
-    public static List<QcFlag> Run(IReadOnlyList<QcImage> images)
+    /// <param name="dictionaries">Dictionary of each place field that has one (field label -> lookup); empty when no dictionary is imported.</param>
+    public static List<QcFlag> Run(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries)
     {
         List<QcFlag> flags = new();
         List<QcImage> data = images.Where(QcDoctypes.IsData).ToList();
 
         BlankHeaders(data, flags);
         Wording(images, flags);
-        Typos(images, flags);
+        HashSet<(string Image, string Field)> typoFlagged = new();
+        Typos(images, dictionaries, flags, typoFlagged);
+        DictionaryCheck(images, dictionaries, typoFlagged, flags);
         OneOffs(data, flags);
         CoverpageVsCensus(data, flags);
         SameImage(images, flags);
@@ -72,13 +75,20 @@ internal static class QcHeaderChecks
         }
     }
 
-    /// <summary>Check 3: a place that is 1-2 letters different from a more common value in the batch.</summary>
-    private static void Typos(IReadOnlyList<QcImage> images, List<QcFlag> flags)
+    /// <summary>
+    /// Check 3: a place that is 1-2 letters different from a value that is more likely right. For a field with a dictionary that is
+    /// a dictionary value (a value that is in the dictionary is right, however rare it is in the batch) or a clearly more common
+    /// value in the batch, whichever is closer; for a field without a dictionary it is a more common value in the batch.
+    /// </summary>
+    private static void Typos(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries, List<QcFlag> flags, HashSet<(string Image, string Field)> typoFlagged)
     {
         foreach (string field in QcFields.Places)
         {
+            dictionaries.TryGetValue(field, out DictionaryLookup? lookup);
+
             // images per plain value (case-insensitive), with the most used written form to show as the correction
             Dictionary<string, Dictionary<string, int>> forms = new(StringComparer.Ordinal);
+            Dictionary<string, int> used = new(StringComparer.Ordinal);
             foreach (QcImage image in images)
             {
                 string plain = QcWording.Plain(image.HeaderValue(field));
@@ -87,6 +97,9 @@ internal static class QcHeaderChecks
                 string key = plain.ToLowerInvariant();
                 if (!forms.TryGetValue(key, out var written)) forms[key] = written = new(StringComparer.Ordinal);
                 written[plain] = written.GetValueOrDefault(plain) + 1;
+
+                string dictionaryKey = DictionaryLookup.Key(plain);
+                used[dictionaryKey] = used.GetValueOrDefault(dictionaryKey) + 1;
             }
 
             List<(string Key, string Display, int Count)> values = forms
@@ -98,32 +111,77 @@ internal static class QcHeaderChecks
             {
                 string value = image.HeaderValue(field);
                 string plain = QcWording.Plain(value);
-                if (plain.Length < MinTypoLength || plain.Any(char.IsDigit)) continue;
+                if (plain.Length < MinTypoLength) continue;
+
+                // in the dictionary: right (only its case / punctuation can be off, which is check 4's); without one a changed digit is not a typo
+                if (lookup != null ? lookup.Contains(plain) || lookup.FindLoose(plain) != null : plain.Any(char.IsDigit)) continue;
 
                 string key = plain.ToLowerInvariant();
                 int count = forms[key].Values.Sum();
                 int maxDistance = key.Length >= 7 ? 2 : 1;
 
-                (string Key, string Display, int Count)? best = null;
-                int bestDistance = int.MaxValue;
+                // a clearly more common value in the batch
+                (string Key, string Display, int Count)? batch = null;
+                int batchDistance = int.MaxValue;
 
                 foreach (var candidate in values)
                 {
                     if (candidate.Count < MinCommonImages || candidate.Count <= count) break;
 
                     int distance = TextUtil.BoundedDistance(key, candidate.Key, maxDistance);
-                    if (distance == 0 || distance > maxDistance || distance >= bestDistance) continue;
+                    if (distance == 0 || distance > maxDistance || distance >= batchDistance) continue;
 
-                    best = candidate;
-                    bestDistance = distance;
+                    batch = candidate;
+                    batchDistance = distance;
                 }
 
-                if (best != null)
+                // a dictionary value (equally near ones: the one the batch uses more)
+                var dictionary = lookup?.Nearest(plain, maxDistance, d => used.GetValueOrDefault(DictionaryLookup.Key(d)));
+
+                if (dictionary != null && (batch == null || dictionary.Value.Distance <= batchDistance))
                 {
                     flags.Add(new QcFlag(image.Name, field, value, 3,
-                        $"Typo: '{plain}' is {bestDistance} letter(s) different from the more common '{best.Value.Display}' ({best.Value.Count} images)",
-                        best.Value.Display));
+                        $"Typo: '{plain}' is {dictionary.Value.Distance} letter(s) different from the dictionary value '{dictionary.Value.Value}'",
+                        dictionary.Value.Value));
+                    typoFlagged.Add((image.Name, field));
                 }
+                else if (batch != null)
+                {
+                    flags.Add(new QcFlag(image.Name, field, value, 3,
+                        $"Typo: '{plain}' is {batchDistance} letter(s) different from the more common '{batch.Value.Display}' ({batch.Value.Count} images)",
+                        batch.Value.Display));
+                    typoFlagged.Add((image.Name, field));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Check 4: a place that is not in its dictionary (City, Townland, Electoral Division, County: Dict_STND_Ireland ...).
+    /// A value check 3 already reported as a near-miss of a dictionary value is not listed twice.
+    /// </summary>
+    private static void DictionaryCheck(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries,
+        HashSet<(string Image, string Field)> typoFlagged, List<QcFlag> flags)
+    {
+        foreach (string field in QcFields.Places)
+        {
+            if (!dictionaries.TryGetValue(field, out DictionaryLookup? lookup)) continue;
+
+            foreach (QcImage image in images)
+            {
+                string value = image.HeaderValue(field);
+                string plain = QcWording.Plain(value);
+
+                // wording ("of ...", "Co.") is check 2's job: the value is looked up without it
+                if (plain.Length == 0 || lookup.Contains(plain) || typoFlagged.Contains((image.Name, field))) continue;
+
+                string? sameValue = lookup.FindLoose(plain);
+
+                flags.Add(sameValue != null
+                    ? new QcFlag(image.Name, field, value, QcRunner.DictionaryCheck,
+                        $"Dictionary: not written as in {lookup.Names} - '{sameValue}' (case / spacing / punctuation)", sameValue)
+                    : new QcFlag(image.Name, field, value, QcRunner.DictionaryCheck,
+                        $"Dictionary: '{plain}' is not in {lookup.Names}", string.Empty));
             }
         }
     }

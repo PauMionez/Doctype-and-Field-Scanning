@@ -22,15 +22,17 @@ public sealed class SourceChecker
 
     private readonly CiData _ci;
     private readonly CiField _field;
+    private readonly DictionaryLookup? _dictionary;
 
     private readonly Dictionary<string, DoctypeInfo> _exact = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DoctypeInfo> _loose = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (DoctypeInfo? Match, string? Problem)> _resolved = new(StringComparer.Ordinal);
 
-    public SourceChecker(CiData ci, CiField field)
+    public SourceChecker(CiData ci, CiField field, DictionaryLibrary? dictionaries = null)
     {
         _ci = ci;
         _field = field;
+        _dictionary = dictionaries?.Lookup(field.Dictionaries);
 
         foreach (DoctypeInfo doctype in ci.Doctypes)
         {
@@ -71,8 +73,10 @@ public sealed class SourceChecker
             }
         }
 
-        progress?.Report((85, $"Checking {values.Count:N0} '{_field.Label}' value(s) for typos..."));
-        errors.AddRange(TypoAnalyzer.Analyze(values, ct));
+        progress?.Report((85, _dictionary == null
+            ? $"Checking {values.Count:N0} '{_field.Label}' value(s) for typos (most common value as reference)..."
+            : $"Checking {values.Count:N0} '{_field.Label}' value(s) against {_dictionary.Names}..."));
+        errors.AddRange(TypoAnalyzer.Analyze(values, ct, _dictionary));
 
         return errors
             .OrderBy(e => e.Db3, StringComparer.OrdinalIgnoreCase)

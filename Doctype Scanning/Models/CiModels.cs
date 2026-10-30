@@ -10,6 +10,9 @@ public sealed class CiField
     public string Name { get; init; } = string.Empty;
     public bool IsHeader { get; init; }
 
+    /// <summary>Dictionaries named in the CI "Keying Dictionary" column, e.g. Dict_STND_Ireland_City_Key. Empty when the field has none.</summary>
+    public IReadOnlyList<string> Dictionaries { get; init; } = Array.Empty<string>();
+
     /// <summary>Text shown in the dropdown, e.g. "City Name (Header)".</summary>
     public string Display => IsHeader ? $"{Label} (Header)" : Label;
 }

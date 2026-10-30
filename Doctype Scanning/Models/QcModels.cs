@@ -19,4 +19,7 @@ public sealed class QcResult
     public List<string> Notes { get; init; } = new();
 
     public double CaptureLimitPercent { get; init; }
+
+    /// <summary>True when a dictionary was available for at least one field, so check 4 ran.</summary>
+    public bool DictionaryRun { get; init; }
 }

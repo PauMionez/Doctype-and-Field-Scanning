@@ -16,6 +16,7 @@ namespace Doctype_Scanning.ViewModels;
 public partial class MainViewModel : ObservableObject
 {
     private CiData? _ci;
+    private DictionaryLibrary? _dictionaries;
     private List<string> _db3Files = new();
     private List<string> _excelFiles = new();
     private string _db3Folder = string.Empty;
@@ -35,6 +36,16 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string _ciSummary = string.Empty;
 
+    [ObservableProperty]
+    private string _dictionaryPath = "No dictionary imported (optional)";
+
+    [ObservableProperty]
+    private string _dictionarySummary = string.Empty;
+
+    /// <summary>Says what the typo check of the selected field is compared with: its dictionary or the most common value.</summary>
+    [ObservableProperty]
+    private string _referenceHint = string.Empty;
+
     /// <summary>Pre-delivery QC check 12: a batch with a higher share of Capture images is flagged.</summary>
     [ObservableProperty]
     private double _captureLimitPercent = 20;
@@ -49,7 +60,7 @@ public partial class MainViewModel : ObservableObject
     private string _sourceDetails = "No db3 folder or excel selected";
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(StartCommand), nameof(StartQcCommand), nameof(ImportCiCommand), nameof(SelectDb3FolderCommand), nameof(SelectExcelFilesCommand), nameof(ClearSourcesCommand))]
+    [NotifyCanExecuteChangedFor(nameof(StartCommand), nameof(StartQcCommand), nameof(ImportCiCommand), nameof(SelectDb3FolderCommand), nameof(SelectExcelFilesCommand), nameof(ClearSourcesCommand), nameof(ImportDictionaryCommand))]
     [NotifyPropertyChangedFor(nameof(IsIdle))]
     private bool _isBusy;
 
@@ -66,6 +77,69 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnIsDarkModeChanged(bool value) =>
         ThemeManager.Current.ApplicationTheme = value ? ApplicationTheme.Dark : ApplicationTheme.Light;
+
+    partial void OnSelectedFieldChanged(CiField? value) => UpdateReferenceHint();
+
+    /// <summary>
+    /// Imports a dictionary file (e.g. Dictionary_24015.txt). It is optional: a field whose CI "Keying Dictionary" is in the
+    /// file is checked against that dictionary, every other field against the most common value in the files.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(IsIdle))]
+    private async Task ImportDictionaryAsync()
+    {
+        OpenFileDialog dialog = new()
+        {
+            Title = "Select the dictionary file",
+            Filter = "Dictionary (*.txt;*.json)|*.txt;*.json|All files (*.*)|*.*"
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        IsBusy = true;
+        Progress = 0;
+        StatusText = "Reading dictionary...";
+
+        try
+        {
+            DictionaryLibrary library = await Task.Run(() => DictionaryReader.Read(dialog.FileName));
+
+            _dictionaries = library;
+            DictionaryPath = dialog.FileName;
+            DictionarySummary = $"{library.Count} dictionaries, {library.ValueCount:N0} values";
+            StatusText = "Dictionary imported.";
+            UpdateReferenceHint();
+        }
+        catch (Exception ex)
+        {
+            StatusText = "Dictionary import failed.";
+            MessageBox.Show(ex.Message, "Import dictionary", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void UpdateReferenceHint()
+    {
+        CiField? field = SelectedField;
+
+        if (field == null)
+        {
+            ReferenceHint = string.Empty;
+            return;
+        }
+
+        DictionaryLookup? lookup = _dictionaries?.Lookup(field.Dictionaries);
+
+        ReferenceHint = lookup != null
+            ? $"Typos are checked against the dictionary {lookup.Names} ({lookup.ValueCount:N0} values)."
+            : field.Dictionaries.Count == 0
+                ? "No dictionary for this field in the CI: typos are checked against the most common value in the files."
+                : _dictionaries == null
+                    ? $"The CI names {string.Join(", ", field.Dictionaries)} for this field. Import the dictionary to check against it; until then the most common value in the files is used."
+                    : $"{string.Join(", ", field.Dictionaries)} is not in the imported dictionary: the most common value in the files is used.";
+    }
 
     [RelayCommand(CanExecute = nameof(IsIdle))]
     private async Task ImportCiAsync()
@@ -200,6 +274,7 @@ public partial class MainViewModel : ObservableObject
     {
         CiData ci = _ci!;
         CiField field = SelectedField!;
+        DictionaryLibrary? dictionaries = _dictionaries;
         List<string> files = _db3Files.Concat(_excelFiles).ToList();
 
         // the result goes next to the db3s; with excel files only, next to the first one
@@ -220,7 +295,7 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            List<ErrorRecord> errors = await Task.Run(() => new SourceChecker(ci, field).Run(files, root, progress, ct), ct);
+            List<ErrorRecord> errors = await Task.Run(() => new SourceChecker(ci, field, dictionaries).Run(files, root, progress, ct), ct);
 
             Progress = 95;
             StatusText = "Writing excel...";
@@ -265,6 +340,7 @@ public partial class MainViewModel : ObservableObject
     {
         CiData ci = _ci!;
         double limit = CaptureLimitPercent;
+        DictionaryLibrary? dictionaries = _dictionaries;
         List<string> files = _db3Files.Concat(_excelFiles).ToList();
         string root = _db3Folder.Length > 0 ? _db3Folder : Path.GetDirectoryName(_excelFiles[0])!;
         string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -292,7 +368,7 @@ public partial class MainViewModel : ObservableObject
 
                 try
                 {
-                    QcResult result = await Task.Run(() => QcRunner.Run(file, batch, ci, limit), ct);
+                    QcResult result = await Task.Run(() => QcRunner.Run(file, batch, ci, limit, dictionaries), ct);
 
                     string report = Path.Combine(root, $"QC_{Path.GetFileNameWithoutExtension(file)}_{stamp}.xlsx");
                     for (int n = 2; File.Exists(report); n++)
