@@ -23,6 +23,7 @@ public sealed class SourceChecker
     private readonly CiData _ci;
     private readonly CiField _field;
     private readonly DictionaryLookup? _dictionary;
+    private readonly List<DictionaryNote> _notes = new();
 
     private readonly Dictionary<string, DoctypeInfo> _exact = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DoctypeInfo> _loose = new(StringComparer.Ordinal);
@@ -41,6 +42,9 @@ public sealed class SourceChecker
         }
     }
 
+    /// <summary>Comments of the last <see cref="Run"/>: the most common value is not in the dictionary (not flagged as a typo).</summary>
+    public IReadOnlyList<DictionaryNote> Notes => _notes;
+
     public static bool IsExcel(string file) =>
         ExcelExtensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase);
 
@@ -48,6 +52,7 @@ public sealed class SourceChecker
     /// <param name="rootFolder">files under it are reported with their path relative to it, others by file name</param>
     public List<ErrorRecord> Run(IReadOnlyList<string> files, string rootFolder, IProgress<(int Percent, string Text)>? progress, CancellationToken ct)
     {
+        _notes.Clear();
         List<ErrorRecord> errors = new();
         List<ValueEntry> values = new();
 
@@ -76,7 +81,7 @@ public sealed class SourceChecker
         progress?.Report((85, _dictionary == null
             ? $"Checking {values.Count:N0} '{_field.Label}' value(s) for typos (most common value as reference)..."
             : $"Checking {values.Count:N0} '{_field.Label}' value(s) against {_dictionary.Names}..."));
-        errors.AddRange(TypoAnalyzer.Analyze(values, ct, _dictionary));
+        errors.AddRange(TypoAnalyzer.Analyze(values, ct, _dictionary, _field.Label, _notes));
 
         return errors
             .OrderBy(e => e.Db3, StringComparer.OrdinalIgnoreCase)

@@ -15,16 +15,19 @@ internal static class QcHeaderChecks
     private const int MinTypoLength = 4;
 
     /// <param name="dictionaries">Dictionary of each place field that has one (field label -> lookup); empty when no dictionary is imported.</param>
-    public static List<QcFlag> Run(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries)
+    public static List<QcFlag> Run(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries, List<string> notes)
     {
         List<QcFlag> flags = new();
         List<QcImage> data = images.Where(QcDoctypes.IsData).ToList();
 
         BlankHeaders(data, flags);
         Wording(images, flags);
+        // the most common value of a field with a dictionary that is not in it: a comment, not a typo
+        Dictionary<string, HashSet<string>> common = CommonOutsideDictionary(images, dictionaries, notes);
+
         HashSet<(string Image, string Field)> typoFlagged = new();
-        Typos(images, dictionaries, flags, typoFlagged);
-        DictionaryCheck(images, dictionaries, typoFlagged, flags);
+        Typos(images, dictionaries, common, flags, typoFlagged);
+        DictionaryCheck(images, dictionaries, common, typoFlagged, flags);
         OneOffs(data, flags);
         CoverpageVsCensus(data, flags);
         SameImage(images, flags);
@@ -80,11 +83,12 @@ internal static class QcHeaderChecks
     /// a dictionary value (a value that is in the dictionary is right, however rare it is in the batch) or a clearly more common
     /// value in the batch, whichever is closer; for a field without a dictionary it is a more common value in the batch.
     /// </summary>
-    private static void Typos(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries, List<QcFlag> flags, HashSet<(string Image, string Field)> typoFlagged)
+    private static void Typos(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries, Dictionary<string, HashSet<string>> common, List<QcFlag> flags, HashSet<(string Image, string Field)> typoFlagged)
     {
         foreach (string field in QcFields.Places)
         {
             dictionaries.TryGetValue(field, out DictionaryLookup? lookup);
+            HashSet<string> commonHere = common.GetValueOrDefault(field) ?? new HashSet<string>();
 
             // images per plain value (case-insensitive), with the most used written form to show as the correction
             Dictionary<string, Dictionary<string, int>> forms = new(StringComparer.Ordinal);
@@ -112,6 +116,9 @@ internal static class QcHeaderChecks
                 string value = image.HeaderValue(field);
                 string plain = QcWording.Plain(value);
                 if (plain.Length < MinTypoLength) continue;
+
+                // the common value of the field is not flagged as a typo (see CommonOutsideDictionary)
+                if (commonHere.Contains(plain.ToLowerInvariant())) continue;
 
                 // in the dictionary: right (only its case / punctuation can be off, which is check 4's); without one a changed digit is not a typo
                 if (lookup != null ? lookup.Contains(plain) || lookup.FindLoose(plain) != null : plain.Any(char.IsDigit)) continue;
@@ -161,11 +168,13 @@ internal static class QcHeaderChecks
     /// A value check 3 already reported as a near-miss of a dictionary value is not listed twice.
     /// </summary>
     private static void DictionaryCheck(IReadOnlyList<QcImage> images, IReadOnlyDictionary<string, DictionaryLookup> dictionaries,
-        HashSet<(string Image, string Field)> typoFlagged, List<QcFlag> flags)
+        Dictionary<string, HashSet<string>> common, HashSet<(string Image, string Field)> typoFlagged, List<QcFlag> flags)
     {
         foreach (string field in QcFields.Places)
         {
             if (!dictionaries.TryGetValue(field, out DictionaryLookup? lookup)) continue;
+
+            HashSet<string> commonHere = common.GetValueOrDefault(field) ?? new HashSet<string>();
 
             foreach (QcImage image in images)
             {
@@ -174,6 +183,9 @@ internal static class QcHeaderChecks
 
                 // wording ("of ...", "Co.") is check 2's job: the value is looked up without it
                 if (plain.Length == 0 || lookup.Contains(plain) || typoFlagged.Contains((image.Name, field))) continue;
+
+                // the most common value of the field is only commented on (see CommonOutsideDictionary), not flagged
+                if (commonHere.Contains(plain.ToLowerInvariant())) continue;
 
                 string? sameValue = lookup.FindLoose(plain);
 
@@ -184,6 +196,48 @@ internal static class QcHeaderChecks
                         $"Dictionary: '{plain}' is not in {lookup.Names}", string.Empty));
             }
         }
+    }
+
+    /// <summary>
+    /// The value a field uses most in the batch is the common value. When it is not in the field's dictionary it is not flagged
+    /// as a typo (checks 3 and 4 skip it): it becomes a comment so the reviewer can see the dictionary may be what is missing it.
+    /// Returns, per field label, the lower-case plain forms of those values; ties count all the tied values.
+    /// </summary>
+    private static Dictionary<string, HashSet<string>> CommonOutsideDictionary(IReadOnlyList<QcImage> images,
+        IReadOnlyDictionary<string, DictionaryLookup> dictionaries, List<string> notes)
+    {
+        Dictionary<string, HashSet<string>> result = new();
+
+        foreach ((string field, DictionaryLookup lookup) in dictionaries)
+        {
+            // images per value, case-insensitive, with the form written most often to show in the comment
+            Dictionary<string, Dictionary<string, int>> forms = new(StringComparer.Ordinal);
+            foreach (QcImage image in images)
+            {
+                string plain = QcWording.Plain(image.HeaderValue(field));
+                if (plain.Length == 0) continue;
+
+                string key = plain.ToLowerInvariant();
+                if (!forms.TryGetValue(key, out var written)) forms[key] = written = new(StringComparer.Ordinal);
+                written[plain] = written.GetValueOrDefault(plain) + 1;
+            }
+
+            int top = forms.Count == 0 ? 0 : forms.Values.Max(f => f.Values.Sum());
+            int total = forms.Values.Sum(f => f.Values.Sum());
+            result[field] = new HashSet<string>(StringComparer.Ordinal);
+            if (top < 2) continue;
+
+            foreach (var form in forms.Where(f => f.Value.Values.Sum() == top).OrderBy(f => f.Key, StringComparer.Ordinal))
+            {
+                string display = form.Value.OrderByDescending(w => w.Value).First().Key;
+                if (lookup.Contains(display)) continue;
+
+                result[field].Add(form.Key);
+                notes.Add($"{field}: '{display}' is the most common value in this batch ({top} of {total} images) but it is not in {lookup.Names} - not flagged as a typo.");
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Check 5: the value differs from both the previous and the next image, which match each other.</summary>

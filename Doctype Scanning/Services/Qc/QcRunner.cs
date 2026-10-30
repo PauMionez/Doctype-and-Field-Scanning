@@ -34,7 +34,7 @@ public static class QcRunner
         List<string> notes = new(batch.Notes);
         Dictionary<string, DictionaryLookup> lookups = FindDictionaries(ci, dictionaries, notes);
 
-        List<QcFlag> flags = QcHeaderChecks.Run(batch.Images, lookups);
+        List<QcFlag> flags = QcHeaderChecks.Run(batch.Images, lookups, notes);
         flags.AddRange(QcDoctypeChecks.Run(batch.Images, captureLimitPercent));
 
         return new QcResult

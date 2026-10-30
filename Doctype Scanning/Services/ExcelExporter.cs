@@ -10,14 +10,16 @@ public static class ExcelExporter
 
     private static readonly string[] Headers = { "DB3", "Error Message", "Value", "Image Name", "Record ID" };
 
-    public static void Export(string outputPath, IReadOnlyList<ErrorRecord> errors)
+    /// <param name="notes">Comments (the most common value is not in the dictionary); written to their own sheet when there are any.</param>
+    public static void Export(string outputPath, IReadOnlyList<ErrorRecord> errors, IReadOnlyList<DictionaryNote>? notes = null)
     {
         using ExcelEngine engine = new();
         IApplication app = engine.Excel;
         app.DefaultVersion = ExcelVersion.Xlsx;
 
         int sheetCount = Math.Max(1, (int)Math.Ceiling(errors.Count / (double)MaxRowsPerSheet));
-        IWorkbook wb = app.Workbooks.Create(sheetCount);
+        bool hasNotes = notes is { Count: > 0 };
+        IWorkbook wb = app.Workbooks.Create(sheetCount + (hasNotes ? 1 : 0));
 
         for (int s = 0; s < sheetCount; s++)
         {
@@ -61,7 +63,39 @@ public static class ExcelExporter
             ws.AutoFilters.FilterRange = ws.Range[1, 1, count + 1, Headers.Length];
         }
 
+        if (hasNotes) WriteNotes(wb.Worksheets[sheetCount], notes!);
+
         wb.SaveAs(outputPath);
         wb.Close();
+    }
+
+    /// <summary>The comments sheet: values that are the most common but not in the dictionary. They are not errors.</summary>
+    private static void WriteNotes(IWorksheet ws, IReadOnlyList<DictionaryNote> notes)
+    {
+        ws.Name = "Dictionary Notes";
+
+        string[] headers = { "Field", "Value", "Count", "Of", "Dictionary", "Comment" };
+        for (int col = 0; col < headers.Length; col++)
+            ws.Range[1, col + 1].Text = headers[col];
+
+        for (int i = 0; i < notes.Count; i++)
+        {
+            DictionaryNote n = notes[i];
+            ws.Range[i + 2, 1].Text = n.Field;
+            ws.Range[i + 2, 2].Text = n.Value;
+            ws.Range[i + 2, 3].Number = n.Count;
+            ws.Range[i + 2, 4].Number = n.Total;
+            ws.Range[i + 2, 5].Text = n.Dictionary;
+            ws.Range[i + 2, 6].Text = n.Message;
+        }
+
+        IRange header = ws.Range[1, 1, 1, headers.Length];
+        header.CellStyle.Font.Bold = true;
+        header.CellStyle.Color = System.Drawing.Color.FromArgb(0x1F, 0x4E, 0x79);
+        header.CellStyle.Font.Color = ExcelKnownColors.White;
+
+        int[] widths = { 22, 34, 9, 9, 42, 90 };
+        for (int col = 0; col < widths.Length; col++)
+            ws.SetColumnWidth(col + 1, widths[col]);
     }
 }

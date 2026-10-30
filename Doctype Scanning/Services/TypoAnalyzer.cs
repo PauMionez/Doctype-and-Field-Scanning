@@ -52,12 +52,13 @@ internal static class TypoAnalyzer
     /// The dictionary of the field, when there is one: it replaces "the most common value in the batch" as the
     /// reference, so a value is right when it is in the dictionary and wrong when it is not.
     /// </param>
-    public static List<ErrorRecord> Analyze(IReadOnlyList<ValueEntry> values, CancellationToken ct, DictionaryLookup? dictionary = null)
+    /// <param name="notes">Receives a comment for the most common value when it is not in the dictionary (it is not flagged as a typo).</param>
+    public static List<ErrorRecord> Analyze(IReadOnlyList<ValueEntry> values, CancellationToken ct, DictionaryLookup? dictionary = null, string fieldLabel = "", List<DictionaryNote>? notes = null)
     {
         List<ErrorRecord> result = new();
         if (values.Count == 0) return result;
 
-        if (dictionary != null) return AnalyzeWithDictionary(values, dictionary, ct);
+        if (dictionary != null) return AnalyzeWithDictionary(values, dictionary, fieldLabel, notes, ct);
 
         // cleaned form of every distinct raw value, with how many times it was keyed
         Dictionary<string, int> variantCounts = new(StringComparer.Ordinal);
@@ -148,7 +149,7 @@ internal static class TypoAnalyzer
     /// is called out, anything else is "not in the dictionary" with the nearest dictionary value as the suggestion.
     /// The batch only decides between equally near suggestions (the one used more often wins).
     /// </summary>
-    private static List<ErrorRecord> AnalyzeWithDictionary(IReadOnlyList<ValueEntry> values, DictionaryLookup dictionary, CancellationToken ct)
+    private static List<ErrorRecord> AnalyzeWithDictionary(IReadOnlyList<ValueEntry> values, DictionaryLookup dictionary, string fieldLabel, List<DictionaryNote>? notes, CancellationToken ct)
     {
         Dictionary<string, int> used = new(StringComparer.Ordinal);
         foreach (ValueEntry entry in values)
@@ -158,6 +159,31 @@ internal static class TypoAnalyzer
         }
 
         int Frequency(string dictionaryValue) => used.GetValueOrDefault(DictionaryLookup.Key(dictionaryValue));
+
+        // The value the files use most (counted exactly as keyed, so a variant of it does not count) is the common value:
+        // when it is not in the dictionary it is not flagged as a typo, it gets a comment so the reviewer can see the
+        // dictionary may be what is missing it. Ties: every tied value.
+        Dictionary<string, int> exact = new(StringComparer.Ordinal);
+        foreach (ValueEntry entry in values)
+        {
+            string cleanedEntry = TextUtil.Clean(entry.Value);
+            if (cleanedEntry.Length > 0) exact[cleanedEntry] = exact.GetValueOrDefault(cleanedEntry) + 1;
+        }
+
+        int topCount = exact.Count == 0 ? 0 : exact.Values.Max();
+        int totalValues = exact.Values.Sum();
+
+        HashSet<string> common = new(StringComparer.Ordinal);
+        if (topCount >= 2)
+        {
+            foreach (string value in exact.Where(kv => kv.Value == topCount).Select(kv => kv.Key).OrderBy(v => v, StringComparer.Ordinal))
+            {
+                if (dictionary.Contains(value)) continue;
+
+                common.Add(value);
+                notes?.Add(new DictionaryNote(fieldLabel, value, topCount, totalValues, dictionary.Names));
+            }
+        }
 
         List<ErrorRecord> result = new();
         Dictionary<string, List<(string Message, string Value)>> findingCache = new(StringComparer.Ordinal);
@@ -169,7 +195,7 @@ internal static class TypoAnalyzer
 
             if (!findingCache.TryGetValue(entry.Value, out var findings))
             {
-                findings = EvaluateWithDictionary(entry.Value, dictionary, Frequency);
+                findings = EvaluateWithDictionary(entry.Value, dictionary, Frequency, common);
                 findingCache[entry.Value] = findings;
             }
 
@@ -180,7 +206,7 @@ internal static class TypoAnalyzer
         return result;
     }
 
-    private static List<(string Message, string Value)> EvaluateWithDictionary(string raw, DictionaryLookup dictionary, Func<string, int> frequency)
+    private static List<(string Message, string Value)> EvaluateWithDictionary(string raw, DictionaryLookup dictionary, Func<string, int> frequency, HashSet<string> common)
     {
         List<(string Message, string Value)> findings = new();
 
@@ -200,6 +226,9 @@ internal static class TypoAnalyzer
 
         if (dictionary.Contains(cleaned)) return findings;
 
+        // the value the files use most: a comment (see DictionaryNote), not a typo
+        if (common.Contains(cleaned)) return findings;
+
         string? sameValue = dictionary.FindLoose(cleaned);
         if (sameValue != null)
         {
@@ -218,6 +247,24 @@ internal static class TypoAnalyzer
         // a short value has too few letters to say which dictionary value was meant
         int maxDistance = cleaned.Length >= 7 ? 2 : cleaned.Length >= 4 ? 1 : 0;
         var nearest = dictionary.Nearest(cleaned, maxDistance, frequency);
+
+        // a variant of the common value ("Rural Dist of Clifden" for "Rural Dist. of Clifden") is a typo of it, whether or not the dictionary has it
+        string? nearCommon = null;
+        int nearCommonDistance = int.MaxValue;
+        foreach (string value in common)
+        {
+            int distance = TextUtil.BoundedDistance(cleaned.ToLowerInvariant(), value.ToLowerInvariant(), Math.Max(maxDistance, 1));
+            if (distance == 0 || distance > Math.Max(maxDistance, 1) || distance >= nearCommonDistance) continue;
+
+            nearCommon = value;
+            nearCommonDistance = distance;
+        }
+
+        if (nearCommon != null && (nearest == null || nearCommonDistance <= nearest.Value.Distance))
+        {
+            findings.Add(($"[Typo] Not in the dictionary ({dictionary.Names}) - did you mean '{nearCommon}'? (the most common value in the files, which is not in the dictionary)", cleaned));
+            return findings;
+        }
 
         findings.Add((nearest == null
             ? $"[Typo] Not in the dictionary ({dictionary.Names})"

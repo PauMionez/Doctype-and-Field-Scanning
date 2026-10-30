@@ -295,20 +295,22 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            List<ErrorRecord> errors = await Task.Run(() => new SourceChecker(ci, field, dictionaries).Run(files, root, progress, ct), ct);
+            SourceChecker checker = new(ci, field, dictionaries);
+            List<ErrorRecord> errors = await Task.Run(() => checker.Run(files, root, progress, ct), ct);
+            IReadOnlyList<DictionaryNote> notes = checker.Notes;
 
             Progress = 95;
             StatusText = "Writing excel...";
 
             string outputPath = Path.Combine(root, $"DocType_Typo_Check_{field.Name}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx");
-            await Task.Run(() => ExcelExporter.Export(outputPath, errors), ct);
+            await Task.Run(() => ExcelExporter.Export(outputPath, errors, notes), ct);
 
             Progress = 100;
             StatusText = $"Done - {errors.Count:N0} error(s) in {files.Count} file(s). Saved to {outputPath}";
 
             string question = errors.Count == 0
-                ? $"No errors found in {files.Count} file(s).\n\nThe (empty) result was saved to:\n{outputPath}\n\nOpen it?"
-                : $"{errors.Count:N0} error(s) found in {files.Count} file(s).\n\nSaved to:\n{outputPath}\n\nOpen it?";
+                ? $"No errors found in {files.Count} file(s).\n\nThe (empty) result was saved to:\n{outputPath}{NotesLine(notes)}\n\nOpen it?"
+                : $"{errors.Count:N0} error(s) found in {files.Count} file(s).\n\nSaved to:\n{outputPath}{NotesLine(notes)}\n\nOpen it?";
 
             if (MessageBox.Show(question, Title, MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
                 Process.Start(new ProcessStartInfo(outputPath) { UseShellExecute = true });
@@ -331,6 +333,12 @@ public partial class MainViewModel : ObservableObject
             IsBusy = false;
         }
     }
+
+    /// <summary>One line for the result message: how many common values are not in the dictionary (listed on the Dictionary Notes sheet, not flagged).</summary>
+    private static string NotesLine(IReadOnlyList<DictionaryNote> notes) =>
+        notes.Count == 0
+            ? string.Empty
+            : $"\n\n{notes.Count} common value(s) are not in the dictionary: not flagged as typos, listed on the 'Dictionary Notes' sheet.";
 
     private bool CanStartQc() => !IsBusy && _ci != null && (_db3Files.Count + _excelFiles.Count) > 0;
 
