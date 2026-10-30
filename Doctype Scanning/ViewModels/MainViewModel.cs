@@ -46,7 +46,10 @@ public partial class MainViewModel : ObservableObject
     private string _sourceSummary = string.Empty;
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(StartCommand), nameof(StartQcCommand), nameof(ImportCiCommand), nameof(SelectDb3FolderCommand), nameof(SelectExcelFilesCommand))]
+    private string _sourceDetails = "No db3 folder or excel selected";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(StartCommand), nameof(StartQcCommand), nameof(ImportCiCommand), nameof(SelectDb3FolderCommand), nameof(SelectExcelFilesCommand), nameof(ClearSourcesCommand))]
     [NotifyPropertyChangedFor(nameof(IsIdle))]
     private bool _isBusy;
 
@@ -125,27 +128,46 @@ public partial class MainViewModel : ObservableObject
         StatusText = _db3Files.Count == 0 ? "No .db3 file was found in that folder." : "db3 folder selected.";
     }
 
-    /// <summary>Excel exports of db3s are checked with the same rules as the db3s themselves.</summary>
+    /// <summary>
+    /// Excel exports of db3s are checked with the same rules as the db3s themselves.
+    /// Several files can be picked at once (Ctrl / Shift click), and every press adds to the list, also from other folders.
+    /// </summary>
     [RelayCommand(CanExecute = nameof(IsIdle))]
     private void SelectExcelFiles()
     {
         OpenFileDialog dialog = new()
         {
-            Title = "Select the excel export(s) of the db3",
+            Title = "Select the excel file(s) - Ctrl / Shift click for several",
             Filter = "Excel (*.xlsx;*.xlsm)|*.xlsx;*.xlsm",
             Multiselect = true
         };
 
         if (dialog.ShowDialog() != true) return;
 
-        // temp files of an open excel ("~$...") are never real workbooks
-        _excelFiles = dialog.FileNames
-            .Where(f => !Path.GetFileName(f).StartsWith("~$", StringComparison.Ordinal))
+        // temp files of an open excel ("~$...") are never real workbooks; a file picked twice is kept once
+        int before = _excelFiles.Count;
+        _excelFiles = _excelFiles
+            .Concat(dialog.FileNames.Where(f => !Path.GetFileName(f).StartsWith("~$", StringComparison.Ordinal)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         UpdateSources();
-        StatusText = _excelFiles.Count == 0 ? "No excel file selected." : "Excel file(s) selected.";
+        StatusText = _excelFiles.Count == 0
+            ? "No excel file selected."
+            : $"{_excelFiles.Count - before} excel file(s) added, {_excelFiles.Count} selected in total.";
+    }
+
+    /// <summary>Forgets the selected db3 folder and excel files so a new batch can be chosen.</summary>
+    [RelayCommand(CanExecute = nameof(IsIdle))]
+    private void ClearSources()
+    {
+        _db3Folder = string.Empty;
+        _db3Files = new List<string>();
+        _excelFiles = new List<string>();
+
+        UpdateSources();
+        StatusText = "Selection cleared.";
     }
 
     private void UpdateSources()
@@ -155,6 +177,12 @@ public partial class MainViewModel : ObservableObject
         if (_excelFiles.Count > 0) parts.Add($"Excel: {string.Join(", ", _excelFiles.Select(Path.GetFileName))}");
 
         SourcePath = parts.Count == 0 ? "No db3 folder or excel selected" : string.Join("   |   ", parts);
+
+        // the hover text lists every excel on its own line
+        List<string> details = new();
+        if (_db3Folder.Length > 0) details.Add($"Folder: {_db3Folder}");
+        details.AddRange(_excelFiles);
+        SourceDetails = details.Count == 0 ? SourcePath : string.Join("\n", details);
 
         List<string> counts = new();
         if (_db3Folder.Length > 0) counts.Add(_db3Files.Count == 0 ? "no db3 found" : $"{_db3Files.Count} db3");

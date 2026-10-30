@@ -88,14 +88,18 @@
                         <ColumnDefinition Width="170" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <Button Grid.Column="0" Content="Select DB3 Folder" Command="{Binding SelectDb3FolderCommand}"
                             Style="{StaticResource ButtonPrimary}" Height="34" HorizontalAlignment="Stretch" />
                     <Button Grid.Column="1" Content="Select Excel Files" Command="{Binding SelectExcelFilesCommand}"
+                            ToolTip="Pick one or many excel files (Ctrl / Shift click). Each press adds to the list."
                             Style="{StaticResource ButtonPrimary}" Height="34" HorizontalAlignment="Stretch" Margin="8 0 0 0" />
-                    <TextBlock Grid.Column="2" Text="{Binding SourcePath}" ToolTip="{Binding SourcePath}"
+                    <TextBlock Grid.Column="2" Text="{Binding SourcePath}" ToolTip="{Binding SourceDetails}"
                                Style="{StaticResource PathStyle}" Margin="14 0" />
-                    <TextBlock Grid.Column="3" Text="{Binding SourceSummary}" Style="{StaticResource HintStyle}" />
+                    <TextBlock Grid.Column="3" Text="{Binding SourceSummary}" Style="{StaticResource HintStyle}" Margin="0 0 10 0" />
+                    <Button Grid.Column="4" Content="Clear" Command="{Binding ClearSourcesCommand}"
+                            Style="{StaticResource ButtonDefault}" Height="34" Width="70" />
                 </Grid>
             </StackPanel>
         </Border>
